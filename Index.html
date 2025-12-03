@@ -3,96 +3,207 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cooker Whistle Counter</title>
+    <title>Azure Live Camera Counter</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            text-align: center;
-            padding: 20px;
-            background-color: #f4f4f4;
+        body { font-family: 'Segoe UI', sans-serif; background-color: #1a1a1a; color: white; text-align: center; padding: 20px; }
+        
+        /* Main Container for Video & Overlay */
+        .video-container { 
+            position: relative; 
+            display: inline-block; 
+            border: 3px solid #333; 
+            border-radius: 8px; 
+            overflow: hidden;
+            background: #000;
+            max-width: 100%;
         }
-        h1 {
-            color: #333;
+
+        /* The Webcam Video */
+        video { display: block; max-width: 100%; height: auto; transform: scaleX(-1); /* Mirror effect */ }
+
+        /* The Drawing Canvas (Invisible initially, used for API) */
+        #snapshotCanvas { display: none; }
+
+        /* The Overlay Canvas (Visible, draws boxes) */
+        #overlayCanvas { 
+            position: absolute; 
+            top: 0; left: 0; 
+            pointer-events: none; 
+            transform: scaleX(-1); /* Mirror to match video */
         }
-        .counter {
-            font-size: 50px;
-            font-weight: bold;
-            color: #ff5733;
+
+        /* Controls & Stats */
+        .controls { margin-top: 20px; }
+        button { 
+            padding: 12px 24px; font-size: 16px; cursor: pointer; 
+            background-color: #0078D4; color: white; border: none; border-radius: 4px; 
         }
-        button {
-            padding: 10px 20px;
-            font-size: 18px;
-            margin: 10px;
-            cursor: pointer;
+        button:hover { background-color: #0063b1; }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+
+        .stats-box {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #333;
+            border-radius: 8px;
+            display: inline-block;
+            min-width: 300px;
         }
-        .start-btn { background-color: green; color: white; }
-        .reset-btn { background-color: red; color: white; }
+        .big-number { font-size: 40px; font-weight: bold; color: #39ff14; }
+        .label { font-size: 14px; color: #aaa; }
+        .status-text { color: #aaa; margin-top: 5px; font-size: 12px; }
+
+        input { padding: 8px; width: 300px; border-radius: 4px; border: none; margin: 5px; }
     </style>
 </head>
 <body>
 
-    <h1>Cooker Whistle Counter</h1>
-    <p>Whistles Counted:</p>
-    <div class="counter" id="whistleCount">0</div>
+    <h2>Azure AI - Live Face Counter</h2>
 
-    <button class="start-btn" onclick="startListening()">Start Listening</button>
-    <button class="reset-btn" onclick="resetCounter()">Reset</button>
+    <div style="margin-bottom: 20px;">
+        <input type="text" id="endpoint" placeholder="Endpoint URL" value="https://anishvp.cognitiveservices.azure.com/">
+        <input type="password" id="apiKey" placeholder="API Key" value="25nIiW5gx9PBeTCt8xSLUZUAB4FESRswcCu0qhdxE6ojCFKdKzjIJQQJ99BLACGhslBXJ3w3AAAKACOG1kcM">
+    </div>
 
-    <script>
-        let audioContext, analyser, microphone, dataArray;
-        let whistleCount = 0;
-        let isListening = false;
-        let lastWhistleTime = 0;
+    <div class="video-container">
+        <video id="videoElement" autoplay playsinline></video>
+        <canvas id="overlayCanvas"></canvas>
+    </div>
 
-        function startListening() {
-            if (isListening) return;
-            isListening = true;
+    <canvas id="snapshotCanvas"></canvas>
 
-            navigator.mediaDevices.getUserMedia({ audio: true })
-                .then(stream => {
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                    analyser = audioContext.createAnalyser();
-                    microphone = audioContext.createMediaStreamSource(stream);
-                    analyser.fftSize = 512;
-                    dataArray = new Uint8Array(analyser.frequencyBinCount);
-                    microphone.connect(analyser);
+    <div class="controls">
+        <button id="startBtn" onclick="startTracking()">▶ Start Camera & Tracking</button>
+        <button id="stopBtn" onclick="stopTracking()" disabled>⏹ Stop</button>
+    </div>
 
-                    detectWhistle();
-                })
-                .catch(err => {
-                    alert("Microphone access denied or not available.");
-                    console.error(err);
-                });
+    <div class="stats-box">
+        <div class="label">FACES DETECTED NOW</div>
+        <div id="faceCount" class="big-number">0</div>
+        <div id="apiStatus" class="status-text">Ready to start...</div>
+    </div>
+
+<script>
+    let video = document.getElementById('videoElement');
+    let overlayCanvas = document.getElementById('overlayCanvas');
+    let snapshotCanvas = document.getElementById('snapshotCanvas');
+    let ctxOverlay = overlayCanvas.getContext('2d');
+    let ctxSnapshot = snapshotCanvas.getContext('2d');
+    
+    let trackingInterval;
+    let isTracking = false;
+
+    // 1. Start Camera
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+            
+            // Wait for video to be ready to set canvas size
+            video.onloadedmetadata = () => {
+                overlayCanvas.width = video.videoWidth;
+                overlayCanvas.height = video.videoHeight;
+                snapshotCanvas.width = video.videoWidth;
+                snapshotCanvas.height = video.videoHeight;
+            };
+        } catch (err) {
+            alert("Error accessing webcam: " + err.message);
         }
+    }
 
-        function detectWhistle() {
-            analyser.getByteFrequencyData(dataArray);
-            let whistleDetected = false;
+    // 2. Main Tracking Loop
+    function startTracking() {
+        startCamera();
+        isTracking = true;
+        document.getElementById('startBtn').disabled = true;
+        document.getElementById('stopBtn').disabled = false;
+        document.getElementById('apiStatus').innerText = "Camera active. Analyzing every 4 seconds...";
 
-            for (let i = 100; i < 200; i++) { // Whistles usually have high frequencies
-                if (dataArray[i] > 180) { // Threshold for whistle detection
-                    whistleDetected = true;
-                    break;
-                }
+        // Run the check every 4000ms (4 seconds)
+        // WARNING: Don't lower this too much or you will hit Azure rate limits!
+        trackingInterval = setInterval(processFrame, 4000);
+    }
+
+    function stopTracking() {
+        isTracking = false;
+        clearInterval(trackingInterval);
+        document.getElementById('startBtn').disabled = false;
+        document.getElementById('stopBtn').disabled = true;
+        document.getElementById('apiStatus').innerText = "Stopped.";
+        
+        // Stop camera stream
+        if (video.srcObject) {
+            video.srcObject.getTracks().forEach(track => track.stop());
+            video.srcObject = null;
+        }
+    }
+
+    // 3. Capture Frame & Send to Azure
+    async function processFrame() {
+        if (!isTracking) return;
+
+        // Draw current video frame to hidden canvas
+        ctxSnapshot.drawImage(video, 0, 0, snapshotCanvas.width, snapshotCanvas.height);
+
+        // Convert canvas to Blob (binary image data)
+        snapshotCanvas.toBlob(sendToAzure, 'image/jpeg');
+    }
+
+    async function sendToAzure(imageBlob) {
+        const endpoint = document.getElementById('endpoint').value.trim().replace(/\/$/, "");
+        const key = document.getElementById('apiKey').value.trim();
+        const statusText = document.getElementById('apiStatus');
+        const countDisplay = document.getElementById('faceCount');
+
+        statusText.innerText = "Sending frame to Azure...";
+
+        // API URL for Binary Data (Note: Headers are different here)
+        const url = `${endpoint}/face/v1.0/detect?returnFaceId=false&detectionModel=detection_03`;
+
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/octet-stream', // Important for sending raw image
+                    'Ocp-Apim-Subscription-Key': key
+                },
+                body: imageBlob // Send the blob directly
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                
+                // Update Count
+                countDisplay.innerText = data.length;
+                statusText.innerText = `Update success. Found ${data.length} face(s).`;
+
+                // Draw Boxes
+                drawBoxes(data);
+            } else {
+                const err = await response.json();
+                statusText.innerText = `Error: ${err.error ? err.error.code : response.status}`;
             }
 
-            if (whistleDetected) {
-                let now = Date.now();
-                if (now - lastWhistleTime > 2000) { // Prevent counting the same whistle multiple times
-                    whistleCount++;
-                    document.getElementById("whistleCount").innerText = whistleCount;
-                    lastWhistleTime = now;
-                }
-            }
-
-            requestAnimationFrame(detectWhistle);
+        } catch (error) {
+            console.error(error);
+            statusText.innerText = "Network Error (Check Console)";
         }
+    }
 
-        function resetCounter() {
-            whistleCount = 0;
-            document.getElementById("whistleCount").innerText = "0";
-        }
-    </script>
+    // 4. Draw Green Boxes over Video
+    function drawBoxes(faces) {
+        // Clear previous drawings
+        ctxOverlay.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+        ctxOverlay.strokeStyle = "#39ff14";
+        ctxOverlay.lineWidth = 5;
+
+        faces.forEach(face => {
+            const rect = face.faceRectangle;
+            ctxOverlay.strokeRect(rect.left, rect.top, rect.width, rect.height);
+        });
+    }
+</script>
 
 </body>
 </html>
